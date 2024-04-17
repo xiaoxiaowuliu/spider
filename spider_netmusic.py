@@ -1,9 +1,10 @@
 #!/usr/bin/p3
 from lxml import etree
 from selenium import webdriver
-from threading import Thread
+from spider_download import Download
+from concurrent.futures import ThreadPoolExecutor,as_completed
 import json
-import requests
+
 
 class NeteaseSpider:
   def __init__(self):
@@ -11,23 +12,32 @@ class NeteaseSpider:
     opt.add_argument('--headless')
     opt.add_argument('lang=zh_CN.UTF-8')
     opt.add_argument('blink-settings=imagesEnabled=false')
-#    driverPath = "E:\virtualbox_share\chromedriver.exe"
-    self.driver = webdriver.Chrome(chrome_options=opt)
-    self.headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     
-  def getHtmlFromFile(fileName):
+    self.driver = webdriver.Chrome(chrome_options=opt)
+    
+    
+  def getHtmlFromFile(self,fileName):
     with open(fileName,"r",encoding='utf-8') as f:
       data = f.read()
     return data
     
-  def getHtmlFromURL(url):
+  def getHtmlFromURL(self,url):
     self.driver.get(url)
     self.driver.switch_to.frame('g_iframe')
     html = self.driver.page_source
     return html
-
-  def paraseMusic(html):
+    
+  def getHtmlFromFileWithLogin(self,url):
+    with open("cookie.txt","r", encoding="utf8") as f:
+      cookies = json.load(f)
+    self.driver.delete_all_cookies()
+    self.driver.get(url)
+    for c in cookies:
+      self.driver.add_cookie(c)
+    html = self.getHtmlFromURL(url)
+    return html
+  
+  def paraseMusic(self,html):
     htmlElem = etree.HTML(html)
     musicsList = list()
     #歌单名称
@@ -42,6 +52,7 @@ class NeteaseSpider:
     musicsList.append(playlistDic)
     
     #all title
+    
     musicsTitle = htmlElem.xpath("//td[2]/div/div/div/span/a/b/@title")
     #all time
     musicsTime = htmlElem.xpath("//td[3]/span/text()")
@@ -55,46 +66,48 @@ class NeteaseSpider:
         musicDic = {'title':musicsTitle[i],'time':musicsTime[i],'singer':musicsSinger[i],'link':link}
         print(musicDic)
         musicsList.append(musicDic)
-    return musicsList 
+    return musicsList  
     
-  #def downloadMusic(self,title,time,singer,link):
-  def downloadMusic(self,**kwargs): 
-    print(kwargs['title']," downloading... ")
-    res = requests.get(kwargs['link'],headers=self.headers)
-    if res.status_code == 200:
-      titleStr = str(kwargs['title']).replace('/',',')
-      singerStr = str(kwargs['singer']).replace('/',',')
-      saveName = titleStr+"-"+singerStr+".mp3"
-      with open(saveName,"wb") as f:
-        f.write(res.content)
-      print(titleStr+" download successful") 
-    else:
-      print(kwargs['title']+" download failure")  
-    
-    
-  def crawl(self,url):
-    print('---start---')
+  def crawl(self,url):   
     '''
-    html = self.getHtmlFromURL(url)
-    with open("netmusic.html","w",encoding='utf-8') as f:
+    #html = self.getHtmlFromURL(url)
+    html = self.getHtmlFromFileWithLogin(url)    
+    with open("netmusic_login.html","w",encoding='utf-8') as f:
       f.write(html)
     '''
-    '''
-    html = self.getHtmlFromFile("netmusic.html")
-    musics =self.paraseMusic(html)
     
-    with open("netmusic.log","w", encoding="utf8") as f:
-      json.dump(musics,f,ensure_ascii=False)      
+    '''    
+    html = self.getHtmlFromFile("netmusic_login.html")
+    musicsList =self.paraseMusic(html)
+    
+    with open("netmusic_login.log","w",encoding="utf8") as f:
+      json.dump(musicsList,f,ensure_ascii=False)      
     '''
-    with open("netmusic.log","r", encoding="utf8") as f:
+    
+    with open("netmusic_login.log","r", encoding="utf8") as f:
       musicList = json.load(f)
       
-    for m in  musicList:
-      Thread(target=self.downloadMusic,kwargs=m).start()
+        
+    futures = []
+    download = Download()
+    with ThreadPoolExecutor(max_workers=5) as p:    
+      for m in musicList:
+        musicName = str(m['title']+"_"+m['singer']+".mp3").replace('/',',')
+        musicURL = m['link']
+        futures.append(p.submit(download.streamDownload,musicName,musicURL))
+    try:
+      with open("download_success_list.txt","w",encoding="utf-8") as fs,open("download_fail_list.txt","w",encoding="utf-8") as ff:
+        for future in as_completed(futures):
+          file = future.result()
+          if str(file).startswith("+"):
+            ff.write(file.replace("+","")+"\n")
+          else:
+            fs.write(file+"\n")        
+    except Exception as e:
+      print(e)
+    
       
-      
-   
 if __name__ == '__main__':
   spider = NeteaseSpider()
-  url  = "https://music.163.com/#/discover/toplist?id=3779629"
+  url  = 'https://music.163.com/#/my/m/music/playlist?id=28659883'
   spider.crawl(url)
